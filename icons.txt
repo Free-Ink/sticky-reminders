@@ -1,0 +1,7 @@
+bell       = bell
+clock      = clock
+wifi       = wifi
+plus       = plus
+settings   = settings
+arrow-left = arrow-left
+globe      = globe
