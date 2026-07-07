@@ -95,7 +95,7 @@ static void startAlertBuzz() {
   buzzer.noTone();
   buzz.active = true;
   buzz.toneOn = false;
-  buzz.remaining = 5;
+  buzz.remaining = 10;
   buzz.nextAt = 0;
 }
 
@@ -493,6 +493,11 @@ void setup() {
 
   display.begin();  input.begin();  rtc.begin();  buzzer.begin();
 
+  // Poll input on its own task: taps land in a queue (popTouchTap) no matter
+  // how long a render or panel refresh keeps loop() busy — the fix for
+  // dropped keystrokes. loop() must not call input.update() anymore.
+  input.beginAsync(/*taskPriority=*/2, /*pollMs=*/10);
+
   // Now the framebuffer exists — build the UI on top of it.
   static ui::DisplayTarget target(display.getFrameBuffer(), display.getDisplayWidth(),
                                   display.getDisplayHeight(), display.getDisplayWidthBytes());
@@ -605,7 +610,6 @@ void setup() {
 }
 
 void loop() {
-  input.update();
   serviceAlertBuzz();
 
   static uint32_t lastTick = 0;
@@ -627,47 +631,42 @@ void loop() {
     }
   }
 
-  ui::InputSnapshot snap = ui::snapshotFrom(input, app->device());
+  // Taps are sampled on the input task (beginAsync in setup) and queued —
+  // nothing is lost while this thread renders or the panel refreshes. route()
+  // dispatches each tap against the last rendered frame without drawing
+  // (microseconds), so a fast typing burst costs one repaint, not one 200ms
+  // render per key.
+  float nx, ny;
+  while (input.popTouchTap(nx, ny)) {
+    ui::InputSnapshot tap;
+    const ui::Point p = ui::touchToLogical(app->device(), nx, ny);
+    tap.touchReleased = true;
+    tap.touchX = p.x;
+    tap.touchY = p.y;
+    app->route(tap);
+  }
 
-  // Render on demand, not every loop: a full repaint costs real CPU time (the
-  // keyboard is ~40 per-pixel rounded fills), and rendering unconditionally
-  // starves the touch poll — keystrokes land while the CPU is busy repainting
-  // an unchanged frame. Idle loops just poll input at full cadence.
-  const bool inputActive = snap.touchPressed || snap.touchReleased || snap.confirm ||
-                           snap.back || snap.focusNext || snap.focusPrev ||
-                           snap.prev || snap.next;
+  static ui::RefreshHint pending = ui::RefreshHint::None;
+  if (app->invalidated()) {
+    app->render();
+    const ui::RefreshHint hint = app->lastRenderRefreshHint();
+    if (static_cast<uint8_t>(hint) > static_cast<uint8_t>(pending)) pending = hint;
+  }
 
-  // Keystroke coalescing: a panel refresh blocks ~half a second and any tap
-  // completed inside it is lost, so refreshing per keystroke drops letters
-  // under fast typing. While text-entry actions keep arriving, keep capturing
-  // taps and hold the refresh; push one refresh when the typing pauses.
-  static uint32_t typeHoldUntil = 0;
-  const bool holdActive = typeHoldUntil != 0 && millis() < typeHoldUntil;
+  // Push the newest frame whenever the panel is idle. Under fast typing the
+  // refreshes chain back-to-back — each one shows every keystroke that landed
+  // while the previous refresh ran (the ~0.6s fast waveform is the pace) —
+  // and stop when nothing is dirty.
+  if (pending != ui::RefreshHint::None && !display.refreshBusy()) {
+    ui::presentAsync(display, pending);
+    pending = ui::RefreshHint::None;
 
-  if (inputActive || (app->invalidated() && !holdActive)) {
-    app->render(snap);
-
-    const ui::ActionEvent ev = app->lastEvent();
-    const bool kbScreen = state.screen == ScreenNew || state.screen == ScreenWifiPass;
-    if (ev && kbScreen && (ev.action == ActionKey || ev.action == ActionBackspace ||
-                           ev.action == ActionShift || ev.action == ActionMode)) {
-      typeHoldUntil = millis() + 250;   // batch this burst into one refresh
-    } else if (ev) {
-      typeHoldUntil = 0;                // any other action refreshes immediately
-    }
-
-    if (typeHoldUntil == 0 || millis() >= typeHoldUntil) {
-      typeHoldUntil = 0;
-      ui::present(display, app->lastRenderRefreshHint());
-
-      // A frame was just pushed; if it was the "Scanning..." screen, run the
-      // blocking Wi-Fi scan now that the user can see why we're busy.
-      if (state.scanPending && state.screen == ScreenWifiScan &&
-          app->lastRenderRefreshHint() != ui::RefreshHint::None) {
-        state.scanPending = false;
-        scanNets(state);
-        app->invalidate(ui::RefreshHint::Fast);
-      }
+    // The "Scanning..." frame is on its way to the panel; run the blocking
+    // Wi-Fi scan while the refresh runs.
+    if (state.scanPending && state.screen == ScreenWifiScan) {
+      state.scanPending = false;
+      scanNets(state);
+      app->invalidate(ui::RefreshHint::Fast);
     }
   }
   delay(10);
