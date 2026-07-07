@@ -6,8 +6,8 @@ reminder list with a delete dialog, on-screen-keyboard entry, a settings
 screen with Wi-Fi/NTP clock sync, a clock adjuster with a 12/24-hour toggle,
 and a buzzer that goes off when a reminder is due.
 
-Follows the FreeInk `/docs/sticky` tutorial. Hardware: ESP32-S3 with an SSD1677
-3.97″ 800×480 e-paper panel, GT911 touch, PCF8563 RTC and a buzzer.
+Hardware: ESP32-S3 with an SSD1677 3.97″ 800×480 e-paper panel, GT911 touch,
+PCF8563 RTC and a buzzer.
 
 ## Setup
 
@@ -33,6 +33,17 @@ python3 freeink-sdk/libs/assets/Icons/tools/gen_icons.py \
     --svgdir   freeink-sdk/libs/assets/Icons/lucide/icons \
     --sizes    24 \
     --out      src/generated_icons.h
+```
+
+- `src/generated_font_large.h` — a 32px anti-aliased Noto Sans for the
+  settings-row labels (every DisplayTarget font slot defaults to the bundled
+  34px-line Noto Sans; this binds a larger one to slot 1). Regenerate from a
+  [Noto Sans Regular](https://notofonts.github.io) TTF:
+
+```bash
+python3 freeink-sdk/libs/ui/FreeInkUI/tools/gen_font.py \
+    --ttf NotoSans-Regular.ttf --size 32 --alpha \
+    --name NotoSansLarge --out src/generated_font_large.h
 ```
 
 ## Build and flash
